@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>Our Pot · daily savings tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+  :root{
+    --bg:#0B1020; --card:#141A30; --card2:#1A2142;
+    --border:rgba(123,143,255,0.14); --borderS:rgba(123,143,255,0.28);
+    --you:#5B8DEF; --her:#F472B6; --grow:#34D399; --gold:#F5B544;
+    --text:#E8ECFF; --muted:#8A93C2; --faint:#5A6296;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:'Inter',ui-sans-serif,system-ui;}
+  .num{font-family:'Space Grotesk',ui-sans-serif;font-variant-numeric:tabular-nums;}
+  button{font-family:inherit;cursor:pointer;border:none;}
+  button:focus-visible,.cellbtn:focus-visible{outline:2px solid var(--you);outline-offset:2px;}
+  input{font-family:'Space Grotesk',sans-serif;}
+  input:focus{outline:none;}
+  table{border-collapse:collapse;}
+  ::-webkit-scrollbar{height:8px;width:8px;}
+  ::-webkit-scrollbar-thumb{background:var(--card2);border-radius:8px;}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important;}}
+  #boot{min-height:100vh;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px;}
+</style>
+</head>
+<body>
+<div id="root"><div id="boot">Loading Our Pot…</div></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+/* ============================================================== *
+ *  EDIT THESE TWO LINES with your Supabase project credentials.
+ *  (Supabase dashboard → Project Settings → API)
+ * ============================================================== */
+const SUPABASE_URL      = "https://pqxhnpgzabhtmrcmxxhp.supabase.co/rest/v1/";
+const SUPABASE_ANON_KEY = "sb_publishable_uKjvJFy-P0TKlcgxZt_xcw_l3KuAmtO";
+/* ============================================================== */
+
+const { useState, useEffect, useMemo, useRef } = React;
+
+const CONFIGURED = !SUPABASE_URL.includes("YOUR-PROJECT") && !!SUPABASE_ANON_KEY && !SUPABASE_ANON_KEY.includes("YOUR-ANON");
+const sb = CONFIGURED ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+const C = {
+  bg:"#0B1020", card:"#141A30", card2:"#1A2142",
+  border:"rgba(123,143,255,0.14)", borderStrong:"rgba(123,143,255,0.28)",
+  you:"#5B8DEF", her:"#F472B6", grow:"#34D399", gold:"#F5B544",
+  text:"#E8ECFF", muted:"#8A93C2", faint:"#5A6296",
+};
+const clone = (x) => JSON.parse(JSON.stringify(x));
+const inr = (n) => "₹" + Math.round(n||0).toLocaleString("en-IN");
+const inrShort = (n) => { n=Math.round(n||0);
+  if(n>=1e7) return "₹"+(n/1e7).toFixed(2)+"Cr";
+  if(n>=1e5) return "₹"+(n/1e5).toFixed(2)+"L";
+  if(n>=1e3) return "₹"+(n/1e3).toFixed(1)+"k"; return "₹"+n; };
+const usd = (n) => "$" + (Math.round((n||0)*100)/100).toLocaleString("en-US");
+
+const pad2 = (x)=>String(x).padStart(2,"0");
+const curMonthKey = ()=>{const d=new Date();return `${d.getFullYear()}-${pad2(d.getMonth()+1)}`;};
+const parseKey = (k)=>{const [y,m]=k.split("-").map(Number);return [y,m-1];};
+const daysInMonth = (k)=>{const [y,mi]=parseKey(k);return new Date(y,mi+1,0).getDate();};
+const firstWeekday = (k)=>{const [y,mi]=parseKey(k);return new Date(y,mi,1).getDay();};
+const monthLabel = (k)=>{const [y,mi]=parseKey(k);return new Date(y,mi,1).toLocaleDateString("en-US",{month:"long",year:"numeric"});};
+const monthShort = (k)=>{const [y,mi]=parseKey(k);return new Date(y,mi,1).toLocaleDateString("en-US",{month:"short",year:"2-digit"});};
+const addMonth = (k,d)=>{const [y,mi]=parseKey(k);const x=new Date(y,mi+d,1);return `${x.getFullYear()}-${pad2(x.getMonth()+1)}`;};
+const monthList = (start,n)=>{const out=[];let k=start;for(let i=0;i<n;i++){out.push(k);k=addMonth(k,1);}return out;};
+const statusOf = (k)=>{const t=curMonthKey();return k<t?"completed":k===t?"current":"future";};
+const todayDate = ()=>new Date().getDate();
+
+function defaultState(){
+  return {
+    config:{ youName:"You", partnerName:"Partner", dailyPerPerson:10, exchangeRate:85,
+      monthlyReturnPct:3, reinvestPct:50, startMonth:curMonthKey(), durationMonths:36 },
+    months:{},
+  };
+}
+
+/* ---------------- engine ---------------- */
+function depositUSDof(m){const days=(m&&m.days)||{};return Object.values(days).reduce((s,d)=>s+(Number(d.you)||0)+(Number(d.her)||0),0);}
+function fundedDays(m){const days=(m&&m.days)||{};return Object.values(days).filter(d=>(Number(d.you)||0)+(Number(d.her)||0)>0).length;}
+function buildLedger(state){
+  const cfg=state.config;
+  const months=monthList(cfg.startMonth,cfg.durationMonths);
+  let balance=0,cumCash=0,cumINR=0,cumUSD=0;
+  const ledger=[];
+  for(const key of months){
+    const mObj=state.months[key]||{};
+    const dUSD=depositUSDof(mObj);
+    const dINR=dUSD*cfg.exchangeRate;
+    const rPct=mObj.returnPct!=null?mObj.returnPct:cfg.monthlyReturnPct;
+    const st=statusOf(key);
+    const row={key,dUSD,dINR,rPct,st,start:balance};
+    if(st==="future"){row.end=null;row.profit=0;row.reinvested=0;row.cash=0;}
+    else{
+      const pre=balance+dINR;
+      const profit=pre*rPct/100;
+      const reinvested=profit*cfg.reinvestPct/100;
+      const cash=profit-reinvested;
+      row.pre=pre;row.profit=profit;row.reinvested=reinvested;row.cash=cash;
+      cumINR+=dINR;cumUSD+=dUSD;
+      if(st==="completed"){balance=pre+reinvested;cumCash+=cash;row.end=balance;row.realized=true;}
+      else{row.realizedNow=balance+dINR;row.projEnd=pre+reinvested;balance=balance+dINR;row.end=row.realizedNow;row.realized=false;}
+    }
+    ledger.push(row);
+  }
+  return {ledger,months,balance,cumCash,cumINR,cumUSD};
+}
+function planLine(cfg){
+  const planDep=cfg.dailyPerPerson*2*30*cfg.exchangeRate;
+  let b=0;const out=[];
+  for(let m=0;m<cfg.durationMonths;m++){const pre=b+planDep;b=pre+pre*cfg.monthlyReturnPct/100*cfg.reinvestPct/100;out.push(b);}
+  return out;
+}
+
+/* ============================================================== */
+function App(){
+  const [state,setState]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [loadError,setLoadError]=useState(null);
+  const [selMonth,setSelMonth]=useState(curMonthKey());
+  const [selDay,setSelDay]=useState(null);
+  const [showSettings,setShowSettings]=useState(false);
+  const [sync,setSync]=useState("idle"); // idle | saving | error
+  const [potCode,setPotCode]=useState(()=>{try{return localStorage.getItem("ourpot_code")||"";}catch(e){return "";}});
+
+  const clientId=useMemo(()=>"c_"+Math.random().toString(36).slice(2,9),[]);
+  const stateRef=useRef(null);
+  const lastEditAt=useRef(0);
+  const debTimer=useRef(null);
+  useEffect(()=>{stateRef.current=state;},[state]);
+
+  const setPot=(code)=>{try{localStorage.setItem("ourpot_code",code);}catch(e){} setPotCode(code);};
+
+  // initial load for this pot
+  useEffect(()=>{
+    if(!CONFIGURED||!potCode){setLoading(false);return;}
+    let cancelled=false;
+    (async()=>{
+      setLoading(true);setLoadError(null);
+      try{
+        const {data:row,error}=await sb.from("pots").select("data").eq("id",potCode).maybeSingle();
+        if(error) throw error;
+        if(cancelled) return;
+        if(row&&row.data&&row.data.config){setState(row.data);}
+        else{
+          const ds=defaultState();
+          await sb.from("pots").upsert({id:potCode,data:ds,last_writer:clientId,updated_at:new Date().toISOString()});
+          if(!cancelled) setState(ds);
+        }
+      }catch(e){if(!cancelled) setLoadError(e.message||String(e));}
+      if(!cancelled) setLoading(false);
+    })();
+    return ()=>{cancelled=true;};
+  },[potCode]);
+
+  // pull latest when the tab regains focus (lightweight cross-device sync)
+  useEffect(()=>{
+    if(!CONFIGURED||!potCode) return;
+    const pull=async()=>{
+      if(Date.now()-lastEditAt.current<1500) return; // don't clobber an edit in progress
+      try{
+        const {data:row}=await sb.from("pots").select("data,last_writer").eq("id",potCode).maybeSingle();
+        if(row&&row.data&&row.data.config&&row.last_writer!==clientId) setState(row.data);
+      }catch(e){}
+    };
+    const onVis=()=>{if(document.visibilityState==="visible") pull();};
+    document.addEventListener("visibilitychange",onVis);
+    window.addEventListener("focus",onVis);
+    return ()=>{document.removeEventListener("visibilitychange",onVis);window.removeEventListener("focus",onVis);};
+  },[potCode]);
+
+  const persist=async(transform)=>{
+    if(!sb||!potCode) return;
+    setSync("saving");
+    try{
+      const {data:row}=await sb.from("pots").select("data").eq("id",potCode).maybeSingle();
+      const base=(row&&row.data&&row.data.config)?row.data:stateRef.current;
+      const next=transform(base);
+      const {error}=await sb.from("pots").upsert({id:potCode,data:next,last_writer:clientId,updated_at:new Date().toISOString()});
+      if(error) throw error;
+      setSync("idle");
+    }catch(e){console.error(e);setSync("error");}
+  };
+  const commit=(transform,opts)=>{
+    lastEditAt.current=Date.now();
+    setState(prev=>transform(prev));
+    if(opts&&opts.debounce){
+      if(debTimer.current) clearTimeout(debTimer.current);
+      debTimer.current=setTimeout(()=>persist(transform),600);
+    }else{ persist(transform); }
+  };
+  const refresh=async()=>{
+    setSync("saving");
+    try{
+      const {data:row}=await sb.from("pots").select("data").eq("id",potCode).maybeSingle();
+      if(row&&row.data&&row.data.config) setState(row.data);
+      setSync("idle");
+    }catch(e){setSync("error");}
+  };
+
+  /* ----- screens before main ----- */
+  if(!CONFIGURED) return <ConfigNeeded/>;
+  if(!potCode) return <PotSetup onJoin={setPot}/>;
+  if(loading||!state) return <Splash error={loadError}/>;
+
+  const cfg=state.config;
+  const data=buildLedger(state);
+  const plan=planLine(cfg);
+  const list=data.months;
+  const safeSel=list.includes(selMonth)?selMonth:list[0];
+
+  /* ----- mutations ----- */
+  const setDay=(mk,day)=>(you,her)=>commit((s)=>{
+    const ns=clone(s);const m=ns.months[mk]||(ns.months[mk]={days:{},returnPct:null});if(!m.days)m.days={};
+    const yv=Number(you)||0,hv=Number(her)||0;
+    if(yv<=0&&hv<=0) delete m.days[day]; else m.days[day]={you:yv,her:hv};
+    return ns;
+  });
+  const logToday=()=>{
+    const t=curMonthKey(); if(!list.includes(t)) return;
+    commit((s)=>{const ns=clone(s);const m=ns.months[t]||(ns.months[t]={days:{},returnPct:null});if(!m.days)m.days={};m.days[todayDate()]={you:ns.config.dailyPerPerson,her:ns.config.dailyPerPerson};return ns;});
+    setSelMonth(t);setSelDay(todayDate());
+  };
+  const lastLoggable=(mk)=>{const st=statusOf(mk);return st==="completed"?daysInMonth(mk):st==="current"?todayDate():0;};
+  const fillMonth=(mk)=>commit((s)=>{
+    const ns=clone(s);const m=ns.months[mk]||(ns.months[mk]={days:{},returnPct:null});if(!m.days)m.days={};
+    const last=lastLoggable(mk);for(let d=1;d<=last;d++)m.days[d]={you:ns.config.dailyPerPerson,her:ns.config.dailyPerPerson};return ns;
+  });
+  const clearMonth=(mk)=>commit((s)=>{const ns=clone(s);if(ns.months[mk])ns.months[mk].days={};return ns;});
+  const toggleDay=(mk,day)=>commit((s)=>{
+    const ns=clone(s);const m=ns.months[mk]||(ns.months[mk]={days:{},returnPct:null});if(!m.days)m.days={};
+    const cur=m.days[day];const has=cur&&((cur.you||0)+(cur.her||0)>0);
+    if(has) delete m.days[day]; else m.days[day]={you:ns.config.dailyPerPerson,her:ns.config.dailyPerPerson};
+    return ns;
+  });
+  const setCfg=(patch)=>commit((s)=>({...s,config:{...s.config,...patch}}),{debounce:true});
+  const setMonthReturn=(mk,val)=>commit((s)=>{
+    const ns=clone(s);const m=ns.months[mk]||(ns.months[mk]={days:{},returnPct:null});
+    m.returnPct=(val===""||val==null)?null:Number(val);return ns;
+  },{debounce:true});
+  const resetAll=()=>{const ds=defaultState();setState(ds);persist(()=>ds);setSelMonth(curMonthKey());setSelDay(null);setShowSettings(false);};
+
+  /* ----- KPIs ----- */
+  const curKey=curMonthKey();
+  const curIdx=list.indexOf(curKey);
+  const monthNo=curIdx>=0?curIdx+1:(curKey<cfg.startMonth?0:cfg.durationMonths);
+  const planAtNow=curIdx>=0?plan[curIdx]:(curIdx<0?0:plan[plan.length-1]);
+  const delta=data.balance-(planAtNow||0);
+  const onTrack=delta>=0;
+
+  const selObj=state.months[safeSel]||{};
+  const selStatus=statusOf(safeSel);
+  const selLast=lastLoggable(safeSel);
+  const selFunded=fundedDays(selObj);
+  const selDeposit=depositUSDof(selObj);
+  const selLedger=data.ledger.find(r=>r.key===safeSel)||{};
+
+  const chartPlan=plan.map(v=>Math.round(v));
+  const chartActual=list.map((k,i)=>data.ledger[i].st==="future"?null:Math.round(data.ledger[i].end));
+
+  return (
+    <div style={{background:C.bg,minHeight:"100vh"}}>
+      <div style={{maxWidth:1180,margin:"0 auto",padding:"18px 16px"}}>
+
+        {/* header */}
+        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,marginBottom:18}}>
+          <div>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+              <span className="num" style={{fontSize:22,fontWeight:700,letterSpacing:"-0.02em"}}>Our Pot</span>
+              <span style={{padding:"2px 8px",borderRadius:999,fontSize:10,fontWeight:600,background:"rgba(91,141,239,0.15)",color:C.you}}>SYNCED · 3 YR</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:10,fontSize:12,color:C.muted,flexWrap:"wrap"}}>
+              <Dot c={C.you}/> {cfg.youName}<span style={{color:C.faint}}>+</span><Dot c={C.her}/> {cfg.partnerName}
+              <span style={{color:C.faint}}>·</span>
+              <span>{usd(cfg.dailyPerPerson)}/day each</span>
+              <span style={{color:C.faint}}>·</span>
+              <SyncDot sync={sync}/>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8,flexShrink:0}}>
+            <button onClick={refresh} title="Pull latest"
+              style={{padding:"8px 10px",borderRadius:12,fontSize:12,background:C.card,border:`1px solid ${C.border}`,color:C.muted}}>↻</button>
+            <button onClick={()=>setShowSettings(true)}
+              style={{padding:"8px 12px",borderRadius:12,fontSize:12,fontWeight:500,background:C.card,border:`1px solid ${C.border}`,color:C.muted}}>⚙ Settings</button>
+          </div>
+        </div>
+
+        {/* KPIs */}
+        <div style={{display:"grid",gap:12,gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",marginBottom:16}}>
+          <Kpi label="Invested balance" value={inr(data.balance)} accent={C.grow} big
+            sub={monthNo>0?`month ${monthNo} of ${cfg.durationMonths}`:`starts ${monthShort(cfg.startMonth)}`}/>
+          <Kpi label="Cash pocket" value={inr(data.cumCash)} accent={C.gold} sub="taken out (the 1.5% half)"/>
+          <Kpi label="Total contributed" value={inr(data.cumINR)} accent={C.you} sub={`${usd(data.cumUSD)} put in together`}/>
+          <Kpi label={onTrack?"Ahead of plan":"Behind plan"} accent={onTrack?C.grow:C.her}
+            value={(onTrack?"+":"−")+inr(Math.abs(delta)).slice(1)} sub={monthNo>0?`plan: ${inrShort(planAtNow)}`:"—"}/>
+        </div>
+
+        <div style={{display:"grid",gap:16}}>
+          {/* logger */}
+          <Panel>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:8}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <NavBtn dir="‹" disabled={list.indexOf(safeSel)<=0} onClick={()=>{setSelMonth(addMonth(safeSel,-1));setSelDay(null);}}/>
+                <div className="num" style={{fontSize:15,fontWeight:600,minWidth:138,textAlign:"center"}}>{monthLabel(safeSel)}</div>
+                <NavBtn dir="›" disabled={list.indexOf(safeSel)>=list.length-1} onClick={()=>{setSelMonth(addMonth(safeSel,1));setSelDay(null);}}/>
+                <Badge status={selStatus}/>
+              </div>
+              <div className="num" style={{fontSize:12,color:C.muted}}>
+                {selFunded}<span style={{color:C.faint}}>/{selLast||daysInMonth(safeSel)} days</span> · {usd(selDeposit)} · {inr(selDeposit*cfg.exchangeRate)}
+              </div>
+            </div>
+
+            <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+              <button onClick={logToday} disabled={!list.includes(curKey)}
+                style={{padding:"10px 16px",borderRadius:12,fontSize:14,fontWeight:600,background:list.includes(curKey)?C.you:C.card2,color:list.includes(curKey)?"#0B1020":C.faint}}>
+                ✓ Log today — both in ({inr(cfg.dailyPerPerson*2*cfg.exchangeRate)})
+              </button>
+              <button onClick={()=>fillMonth(safeSel)} disabled={selLast===0}
+                style={{padding:"10px 12px",borderRadius:12,fontSize:14,fontWeight:500,background:C.card2,color:C.text,border:`1px solid ${C.border}`,opacity:selLast===0?0.4:1}}>Fill {monthShort(safeSel)}</button>
+              <button onClick={()=>clearMonth(safeSel)}
+                style={{padding:"10px 12px",borderRadius:12,fontSize:14,fontWeight:500,background:"transparent",color:C.muted,border:`1px solid ${C.border}`}}>Clear</button>
+            </div>
+
+            {/* day mosaic */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:6,marginBottom:8}}>
+              {["S","M","T","W","T","F","S"].map((d,i)=>(<div key={i} style={{textAlign:"center",fontSize:10,fontWeight:600,color:C.faint}}>{d}</div>))}
+              {Array.from({length:firstWeekday(safeSel)}).map((_,i)=><div key={"e"+i}/>)}
+              {Array.from({length:daysInMonth(safeSel)}).map((_,i)=>{
+                const day=i+1;
+                const rec=(selObj.days&&selObj.days[day])||null;
+                const hasYou=rec&&(rec.you||0)>0, hasHer=rec&&(rec.her||0)>0;
+                const loggable=day<=selLast;
+                const isToday=safeSel===curKey&&day===todayDate();
+                const isSel=selDay===day;
+                return (
+                  <button key={day} className="cellbtn" disabled={!loggable}
+                    onClick={()=>loggable&&setSelDay(day)}
+                    style={{position:"relative",aspectRatio:"1 / 1",borderRadius:9,overflow:"hidden",
+                      border:`1px solid ${isSel?C.you:isToday?C.borderStrong:C.border}`,background:C.card,
+                      cursor:loggable?"pointer":"default",opacity:loggable?1:0.32,
+                      boxShadow:isSel?`0 0 0 1px ${C.you}`:"none"}}>
+                    <div style={{position:"absolute",left:0,right:0,top:0,height:"50%",background:hasYou?C.you:"transparent",opacity:hasYou?0.85:0}}/>
+                    <div style={{position:"absolute",left:0,right:0,bottom:0,height:"50%",background:hasHer?C.her:"transparent",opacity:hasHer?0.85:0}}/>
+                    <span className="num" style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",
+                      fontSize:11,fontWeight:600,color:(hasYou||hasHer)?"#0B1020":C.faint,
+                      textShadow:(hasYou||hasHer)?"0 1px 1px rgba(255,255,255,0.25)":"none"}}>{day}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {selDay&&selDay<=selLast&&(
+              <DayEditor cfg={cfg} day={selDay} monthKey={safeSel}
+                rec={(selObj.days&&selObj.days[selDay])||null}
+                onSet={setDay(safeSel,selDay)} onClose={()=>setSelDay(null)}/>
+            )}
+
+            {selStatus!=="future"&&(
+              <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${C.border}`,display:"grid",gap:8,gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))"}}>
+                <Mini label="This month in INR" value={inr(selDeposit*cfg.exchangeRate)}/>
+                <Mini label={`Return @ ${selLedger.rPct}%`} value={inr(selLedger.profit||0)} color={C.gold}/>
+                <Mini label="Reinvested (½)" value={inr(selLedger.reinvested||0)} color={C.grow}/>
+                <Mini label="Cash (½)" value={inr(selLedger.cash||0)} color={C.gold}/>
+              </div>
+            )}
+          </Panel>
+
+          {/* chart */}
+          <Panel>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+              <div className="num" style={{fontSize:14,fontWeight:600}}>Actual vs plan · 36 months</div>
+              <div style={{display:"flex",alignItems:"center",gap:12,fontSize:11,color:C.muted}}>
+                <span style={{display:"flex",alignItems:"center",gap:5}}><Dot c={C.grow}/> actual</span>
+                <span style={{display:"flex",alignItems:"center",gap:5}}><span style={{width:14,height:0,borderTop:`2px dashed ${C.you}`,display:"inline-block"}}/> plan</span>
+              </div>
+            </div>
+            <Chart plan={chartPlan} actual={chartActual}/>
+          </Panel>
+
+          {/* ledger */}
+          <Panel pad={false}>
+            <div style={{padding:"16px 16px 8px",fontWeight:600,fontSize:14}} className="num">Monthly ledger</div>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",fontSize:12,minWidth:640}}>
+                <thead>
+                  <tr style={{color:C.muted}}>
+                    {["#","Month","Put in ($)","In INR","Return %","Profit","↺ Reinvest","Cash","Balance"].map((h,i)=>(
+                      <th key={i} style={{textAlign:i>=2?"right":"left",fontWeight:500,padding:"8px 12px",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="num">
+                  {data.ledger.map((r,i)=>{
+                    const isCur=r.key===curKey, future=r.st==="future";
+                    return (
+                      <tr key={r.key} onClick={()=>{setSelMonth(r.key);setSelDay(null);}}
+                        style={{borderBottom:"1px solid rgba(123,143,255,0.06)",cursor:"pointer",
+                          background:r.key===safeSel?"rgba(91,141,239,0.07)":isCur?"rgba(52,211,153,0.05)":"transparent",
+                          opacity:future&&r.dUSD===0?0.4:1}}>
+                        <td style={{padding:"8px 12px",color:C.faint}}>{i+1}</td>
+                        <td style={{padding:"8px 12px",whiteSpace:"nowrap"}}>{monthShort(r.key)} {isCur&&<span style={{color:C.grow,fontSize:10}}>● now</span>}</td>
+                        <td style={{padding:"8px 12px",textAlign:"right"}}>{r.dUSD?usd(r.dUSD):"—"}</td>
+                        <td style={{padding:"8px 12px",textAlign:"right"}}>{r.dINR?inr(r.dINR):"—"}</td>
+                        <td style={{padding:"8px 12px",textAlign:"right"}}>
+                          <input type="number" step="0.1" value={r.rPct}
+                            onClick={(e)=>e.stopPropagation()}
+                            onChange={(e)=>setMonthReturn(r.key,e.target.value)}
+                            className="num" style={{width:48,textAlign:"right",borderRadius:6,padding:"2px 4px",background:"transparent",border:`1px solid ${C.border}`,color:C.text}}/>
+                        </td>
+                        <td style={{padding:"8px 12px",textAlign:"right",color:future?C.faint:C.text}}>{future?"—":inr(r.profit)}</td>
+                        <td style={{padding:"8px 12px",textAlign:"right",color:future?C.faint:C.grow}}>{future?"—":inr(r.reinvested)}</td>
+                        <td style={{padding:"8px 12px",textAlign:"right",color:future?C.faint:C.gold}}>{future?"—":inr(r.cash)}</td>
+                        <td style={{padding:"8px 12px",textAlign:"right",fontWeight:600}}>{r.end==null?"—":inr(r.end)}{isCur&&<span style={{color:C.faint,fontSize:10}}> live</span>}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{padding:"8px 16px",fontSize:11,color:C.faint}}>
+              Tap a row to open that month. Edit any month's <b>Return %</b> inline to record what actually happened.
+            </div>
+          </Panel>
+        </div>
+
+        <div style={{textAlign:"center",fontSize:11,color:C.faint,marginTop:16}}>
+          Pot code <b style={{color:C.muted}}>{potCode}</b> · synced via Supabase · each month: deposit → ₹{cfg.exchangeRate}/$ → +{cfg.monthlyReturnPct}% → half compounds, half to cash.
+        </div>
+      </div>
+
+      {showSettings&&<Settings cfg={cfg} setCfg={setCfg} potCode={potCode} onSwitchPot={()=>{setPot("");}} onClose={()=>setShowSettings(false)} onReset={resetAll}/>}
+    </div>
+  );
+}
+
+/* ---------------- pieces ---------------- */
+function Dot({c}){return <span style={{width:9,height:9,borderRadius:9,background:c,display:"inline-block"}}/>;}
+function NavBtn({dir,disabled,onClick}){return <button onClick={onClick} disabled={disabled} style={{padding:"4px 10px",borderRadius:8,fontSize:14,background:C.card2,color:C.muted,opacity:disabled?0.35:1}}>{dir}</button>;}
+function Panel({children,pad=true}){return <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:18,padding:pad?16:0}}>{children}</div>;}
+function Kpi({label,value,sub,accent,big}){
+  return (
+    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:18,padding:16,position:"relative",overflow:"hidden"}}>
+      <div style={{position:"absolute",left:0,top:0,bottom:0,width:3,background:accent,opacity:0.8}}/>
+      <div style={{fontSize:11,fontWeight:500,color:C.muted,marginBottom:4}}>{label}</div>
+      <div className="num" style={{fontSize:big?26:21,fontWeight:700,color:accent,letterSpacing:"-0.02em",lineHeight:1.1}}>{value}</div>
+      {sub&&<div style={{fontSize:11,color:C.faint,marginTop:4}}>{sub}</div>}
+    </div>
+  );
+}
+function Mini({label,value,color}){return (<div><div style={{fontSize:10,color:C.faint}}>{label}</div><div className="num" style={{fontSize:14,color:color||C.text,fontWeight:600}}>{value}</div></div>);}
+function Badge({status}){
+  const map={completed:{t:"done",c:C.muted,b:"rgba(138,147,194,0.14)"},current:{t:"in progress",c:C.grow,b:"rgba(52,211,153,0.14)"},future:{t:"upcoming",c:C.faint,b:"rgba(90,98,150,0.14)"}};
+  const m=map[status];
+  return <span style={{padding:"2px 8px",borderRadius:999,fontSize:10,fontWeight:600,background:m.b,color:m.c}}>{m.t}</span>;
+}
+function SyncDot({sync}){
+  const m={idle:{t:"synced",c:C.grow},saving:{t:"syncing…",c:C.gold},error:{t:"offline",c:C.her}}[sync];
+  return <span style={{display:"flex",alignItems:"center",gap:5,color:m.c}}><Dot c={m.c}/>{m.t}</span>;
+}
+
+function DayRow({name,color,val,who,you,her,daily,onSet}){
+  return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,padding:"6px 0"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,fontSize:14}}><Dot c={color}/> {name}</div>
+      <div style={{display:"flex",alignItems:"center",gap:6}}>
+        <button onClick={()=>onSet(who==="you"?0:you,who==="her"?0:her)} className="num"
+          style={{padding:"4px 8px",borderRadius:8,fontSize:12,background:val>0?"transparent":C.card2,color:val>0?C.faint:C.text,border:`1px solid ${C.border}`}}>$0</button>
+        <button onClick={()=>onSet(who==="you"?daily:you,who==="her"?daily:her)} className="num"
+          style={{padding:"4px 8px",borderRadius:8,fontSize:12,fontWeight:600,background:val>0?color:C.card2,color:val>0?"#0B1020":C.text,border:`1px solid ${val>0?color:C.border}`}}>${daily}</button>
+        <input type="number" value={val||""} placeholder="0"
+          onChange={(e)=>onSet(who==="you"?e.target.value:you,who==="her"?e.target.value:her)}
+          className="num" style={{width:64,textAlign:"right",borderRadius:8,padding:"4px 8px",fontSize:12,background:C.card2,border:`1px solid ${C.border}`,color:C.text}}/>
+      </div>
+    </div>
+  );
+}
+function DayEditor({cfg,day,monthKey,rec,onSet,onClose}){
+  const you=rec?rec.you||0:0, her=rec?rec.her||0:0;
+  return (
+    <div style={{borderRadius:12,padding:12,marginTop:4,background:C.card2,border:`1px solid ${C.borderStrong}`}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+        <div className="num" style={{fontSize:14,fontWeight:600}}>Day {day} · {monthShort(monthKey)}</div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>onSet(cfg.dailyPerPerson,cfg.dailyPerPerson)} style={{fontSize:12,padding:"4px 8px",borderRadius:8,fontWeight:600,background:C.you,color:"#0B1020"}}>Both in</button>
+          <button onClick={()=>onSet(0,0)} style={{fontSize:12,padding:"4px 8px",borderRadius:8,background:"transparent",color:C.muted,border:`1px solid ${C.border}`}}>Clear</button>
+          <button onClick={onClose} style={{fontSize:12,padding:"4px 8px",borderRadius:8,background:"transparent",color:C.faint}}>✕</button>
+        </div>
+      </div>
+      <DayRow name={cfg.youName} color={C.you} val={you} who="you" you={you} her={her} daily={cfg.dailyPerPerson} onSet={onSet}/>
+      <DayRow name={cfg.partnerName} color={C.her} val={her} who="her" you={you} her={her} daily={cfg.dailyPerPerson} onSet={onSet}/>
+    </div>
+  );
+}
+
+function Chart({plan,actual}){
+  const W=700,H=250,pl=54,pr=12,pt=12,pb=26;
+  const n=plan.length;
+  const maxY=Math.max(...plan,...actual.filter(v=>v!=null),1);
+  const X=(i)=>pl+(n<=1?0:(i/(n-1))*(W-pl-pr));
+  const Y=(v)=>H-pb-(v/maxY)*(H-pt-pb);
+  const planPath=plan.map((v,i)=>(i?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1)).join(" ");
+  const aIdx=[];actual.forEach((v,i)=>{if(v!=null)aIdx.push(i);});
+  const actualPath=aIdx.map((i,k)=>(k?"L":"M")+X(i).toFixed(1)+" "+Y(actual[i]).toFixed(1)).join(" ");
+  const lastI=aIdx.length?aIdx[aIdx.length-1]:null;
+  const yticks=[0,0.25,0.5,0.75,1].map(f=>f*maxY);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",display:"block"}}>
+      {yticks.map((v,i)=>(
+        <g key={i}>
+          <line x1={pl} x2={W-pr} y1={Y(v)} y2={Y(v)} stroke="rgba(123,143,255,0.08)"/>
+          <text x={pl-6} y={Y(v)+3} fontSize="10" fill={C.faint} textAnchor="end" fontFamily="Space Grotesk">{inrShort(v)}</text>
+        </g>
+      ))}
+      {plan.map((_,i)=> i%6===0?(<text key={"x"+i} x={X(i)} y={H-8} fontSize="10" fill={C.faint} textAnchor="middle" fontFamily="Space Grotesk">{i+1}</text>):null)}
+      <path d={planPath} fill="none" stroke={C.you} strokeWidth="2" strokeDasharray="5 4"/>
+      {actualPath&&<path d={actualPath} fill="none" stroke={C.grow} strokeWidth="2.6"/>}
+      {lastI!=null&&<circle cx={X(lastI)} cy={Y(actual[lastI])} r="3.5" fill={C.grow}/>}
+    </svg>
+  );
+}
+
+function Field({label,children,hint}){
+  return (<div style={{marginBottom:12}}>
+    <div style={{fontSize:12,fontWeight:500,color:C.muted,marginBottom:4}}>{label}</div>
+    {children}
+    {hint&&<div style={{fontSize:10,color:C.faint,marginTop:4}}>{hint}</div>}
+  </div>);
+}
+const inputStyle={background:C.card2,border:`1px solid ${C.border}`,color:C.text,borderRadius:10,padding:"8px 10px",width:"100%"};
+
+function Settings({cfg,setCfg,potCode,onSwitchPot,onClose,onReset}){
+  const [confirmReset,setConfirmReset]=useState(false);
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,display:"flex",alignItems:"center",justifyContent:"center",padding:16,background:"rgba(5,8,20,0.72)",zIndex:50}}>
+      <div onClick={(e)=>e.stopPropagation()} style={{width:"100%",maxWidth:440,background:C.card,border:`1px solid ${C.borderStrong}`,borderRadius:20,padding:20,maxHeight:"88vh",overflowY:"auto"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+          <div className="num" style={{fontSize:18,fontWeight:700}}>Settings</div>
+          <button onClick={onClose} style={{background:"transparent",color:C.muted,fontSize:14}}>✕</button>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          <Field label="Your name"><input style={inputStyle} value={cfg.youName} onChange={(e)=>setCfg({youName:e.target.value})}/></Field>
+          <Field label="Partner name"><input style={inputStyle} value={cfg.partnerName} onChange={(e)=>setCfg({partnerName:e.target.value})}/></Field>
+        </div>
+        <Field label="Daily amount per person ($)" hint="Each of you contributes this every day."><input type="number" style={inputStyle} value={cfg.dailyPerPerson} onChange={(e)=>setCfg({dailyPerPerson:Number(e.target.value)||0})}/></Field>
+        <Field label="Exchange rate (₹ per $)" hint="Used to convert each month's dollars to INR."><input type="number" step="0.5" style={inputStyle} value={cfg.exchangeRate} onChange={(e)=>setCfg({exchangeRate:Number(e.target.value)||0})}/></Field>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          <Field label="Monthly return (%)" hint="Default for new months."><input type="number" step="0.1" style={inputStyle} value={cfg.monthlyReturnPct} onChange={(e)=>setCfg({monthlyReturnPct:Number(e.target.value)||0})}/></Field>
+          <Field label="Reinvest (% of profit)" hint="50% = half compounds, half is cash."><input type="number" step="1" style={inputStyle} value={cfg.reinvestPct} onChange={(e)=>setCfg({reinvestPct:Number(e.target.value)||0})}/></Field>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          <Field label="Start month"><input type="month" style={inputStyle} value={cfg.startMonth} onChange={(e)=>e.target.value&&setCfg({startMonth:e.target.value})}/></Field>
+          <Field label="Duration (months)"><input type="number" style={inputStyle} value={cfg.durationMonths} onChange={(e)=>setCfg({durationMonths:Math.max(1,Number(e.target.value)||1)})}/></Field>
+        </div>
+        <div style={{marginTop:8,paddingTop:12,borderTop:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+          <div style={{fontSize:11,color:C.muted}}>Pot code: <b className="num">{potCode}</b></div>
+          <button onClick={onSwitchPot} style={{fontSize:12,padding:"6px 10px",borderRadius:8,background:"transparent",color:C.you,border:`1px solid ${C.border}`}}>Switch pot</button>
+        </div>
+        <div style={{marginTop:10}}>
+          {!confirmReset?(
+            <button onClick={()=>setConfirmReset(true)} style={{fontSize:12,padding:"8px 12px",borderRadius:8,background:"transparent",color:C.her,border:"1px solid rgba(244,114,182,0.3)"}}>Reset this pot's data</button>
+          ):(
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:12,color:C.her}}>Erase everything in this pot?</span>
+              <button onClick={onReset} style={{fontSize:12,padding:"6px 10px",borderRadius:8,fontWeight:600,background:C.her,color:"#0B1020"}}>Yes, reset</button>
+              <button onClick={()=>setConfirmReset(false)} style={{fontSize:12,padding:"6px 10px",borderRadius:8,background:"transparent",color:C.muted,border:`1px solid ${C.border}`}}>Cancel</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- setup / status screens ---------------- */
+function Shell({children}){
+  return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+    <div style={{width:"100%",maxWidth:440,background:C.card,border:`1px solid ${C.border}`,borderRadius:20,padding:24}}>{children}</div>
+  </div>;
+}
+function ConfigNeeded(){
+  return (<Shell>
+    <div className="num" style={{fontSize:20,fontWeight:700,marginBottom:8}}>Almost there 🔌</div>
+    <div style={{fontSize:14,color:C.muted,lineHeight:1.6}}>
+      This page needs your Supabase keys before it can sync. Open <b style={{color:C.text}}>index.html</b> and paste your
+      <b style={{color:C.text}}> Project URL</b> and <b style={{color:C.text}}> anon public key</b> into the two lines at the top
+      (Supabase → Project Settings → API). Full steps are in <b style={{color:C.text}}>SETUP.md</b>.
+    </div>
+  </Shell>);
+}
+function Splash({error}){
+  return (<Shell>
+    {error
+      ? <div><div className="num" style={{fontSize:18,fontWeight:700,color:C.her,marginBottom:8}}>Couldn't reach Supabase</div>
+          <div style={{fontSize:13,color:C.muted,lineHeight:1.6}}>{error}<br/><br/>Check that the SQL ran and your keys are correct, then refresh.</div></div>
+      : <div style={{textAlign:"center",color:C.muted,fontSize:14}}>Loading your pot…</div>}
+  </Shell>);
+}
+function PotSetup({onJoin}){
+  const [code,setCode]=useState("");
+  const gen=()=>setCode("pot-"+Math.random().toString(36).slice(2,8));
+  const valid=code.trim().length>=4;
+  return (<Shell>
+    <div className="num" style={{fontSize:22,fontWeight:700,marginBottom:6}}>Our Pot</div>
+    <div style={{fontSize:14,color:C.muted,lineHeight:1.6,marginBottom:16}}>
+      Pick a <b style={{color:C.text}}>pot code</b> — a shared secret you and your partner both type in. Same code on both phones = same pot.
+    </div>
+    <input value={code} onChange={(e)=>setCode(e.target.value.trim())} placeholder="e.g. pot-aish-bala"
+      style={{...inputStyle,fontSize:16,marginBottom:10}}/>
+    <div style={{display:"flex",gap:8}}>
+      <button onClick={()=>valid&&onJoin(code.trim())} disabled={!valid}
+        style={{flex:1,padding:"12px",borderRadius:12,fontSize:15,fontWeight:600,background:valid?C.you:C.card2,color:valid?"#0B1020":C.faint}}>Open this pot</button>
+      <button onClick={gen} style={{padding:"12px 14px",borderRadius:12,fontSize:13,background:C.card2,color:C.text,border:`1px solid ${C.border}`}}>Random</button>
+    </div>
+    <div style={{fontSize:11,color:C.faint,marginTop:12,lineHeight:1.5}}>
+      Anyone with this code can see and edit the pot, so keep it private. Share it with your partner along with this page's link.
+    </div>
+  </Shell>);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
